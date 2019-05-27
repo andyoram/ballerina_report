@@ -1,2 +1,2 @@
 # ballerina_report
-Code from the O'Reilly Media report, Ballerina: A Language for Integrated Environments.
+This code was written by WSO2 staff for the O'Reilly Media report Ballerina: A Language for Integrated Environments, ISBN 9781492061151. The code is under copyright. Please see the report for details.
