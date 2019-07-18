@@ -3,22 +3,27 @@ import ballerina/log;
 import ballerina/mysql;
 import ballerina/sql;
 
-type Product record {
+type Product record {|
     int id;
     string name;
     float price;
-};
+|};
 
-type Order record {
-    int id?;
-    float total?;
+type Order record {|
+    int id;
+    float total;
     boolean processed = false;
-    Product[] products?;
-};
+    Product[] products;
+|};
 
-type OrderEntry record {
+type Inventory record {|
     int productId;
-};
+    int stock;
+|};
+
+type OrderEntry record {|
+    int productId;
+|};
 
 @http:ServiceConfig {
     basePath: "/OrderService"
@@ -32,14 +37,36 @@ service OrderService on new http:Listener(9091) {
         map<any> qParams = req.getQueryParams();
         int|error orderId = int.convert(qParams["orderId"]);
         if (orderId is int && orderId > 0) {
-            var productOrder = getProductsForOrder(orderId);
-            if (productOrder is error) {
-                log:printError("error in retrieving product information.", err = productOrder);
-                respond(outboundEP, "error in retrieving product information.", statusCode = 500);
+            var productIds = getProductIds(orderId);
+            if (productIds is int[]) {
+                future<Order|error> productOrderFuture = start getProductsForOrder(productIds, orderId);
+                future<Inventory[]|error> inventoryDetailsFuture = start getInventoryForOrder(productIds, orderId);
+
+                map<Order|Inventory[]|error> result = wait { productOrder: productOrderFuture, inventoryDetails: inventoryDetailsFuture };
+                json finalPayload = { orderDetails: "", inventoryDetails: ""};
+                var pOrder = result.productOrder;
+                if (pOrder is error) {
+                    log:printError("error in retrieving product information.", err = pOrder);
+                    respond(outboundEP, "error in retrieving product information.", statusCode = 500);
+                } else {
+                    json payload = check json.convert(pOrder);
+                    finalPayload.orderDetails = payload;
+                }
+
+                var invDetails = result.inventoryDetails;
+                if (invDetails is error) {
+                    log:printError("error in retrieving inventory information.", err = invDetails);
+                    respond(outboundEP, "error in retrieving inventory information.", statusCode = 500);
+                } else {
+                    json payload = check json.convert(invDetails);
+                    finalPayload.inventoryDetails = payload;
+                }
+                respond(outboundEP, untaint finalPayload);
             } else {
-                json payload = check json.convert(productOrder);
-                respond(outboundEP, untaint payload);
+                log:printError("error in retrieving product information.", err = productIds);
+                    respond(outboundEP, "error in retrieving product information.", statusCode = 500);
             }
+
         } else {
             log:printError("invalid input query parameter. expected a positive integer.");
             respond(outboundEP, "invalid input query parameter. expected a positive integer.", statusCode = 400);
@@ -53,17 +80,12 @@ mysql:Client dbClient = new({
     name: "testdb",
     username: "root",
     password: "root",
-    poolOptions: { maximumPoolSize: 5 },
+    poolOptions: { maximumPoolSize: 10 },
     dbOptions: { useSSL: false }
 });
 
-http:Client clientEP = new ("http://localhost:9092");
-
-function getProductsForOrder(int id) returns Order | error {
-    float total = 0;
-    int count = 0;
-    Product[] vProducts = [];
-    sql:Parameter param = {
+function getProductIds(int id) returns int[] | error {
+     sql:Parameter param = {
         sqlType: sql:TYPE_INTEGER,
         value: id
     };
@@ -71,24 +93,51 @@ function getProductsForOrder(int id) returns Order | error {
     if (result is error) {
         return result;
     } else {
+        int[] productIds = [];
         foreach var row in result {
-            http:Request req = new;
             var productId = check row.productId;
-            int pId = check sanitizeInt(productId);
-            var result2 = check clientEP->get("/ProductService/getProduct?productId=" + pId);
-            var payload = result2.getJsonPayload();
-            Product product = check Product.convert(payload);
-            vProducts[count] = product;
-            count = count + 1;
-            total = total + product.price;
+            productIds[productIds.length()] = <int> productId;
         }
+        return productIds;
     }
-    Order productOrder = { };
-    productOrder.id = id;
-    productOrder.total = total;
-    productOrder.products = vProducts;
+}
 
+http:Client productServiceEP = new ("http://localhost:9092");
+
+function getProductsForOrder(int[] ids, int orderId) returns Order | error {
+    float total = 0;
+    int count = 0;
+    Product[] vProducts = [];
+    foreach var id in ids {
+        http:Request req = new;
+        int pId = check sanitizeInt(id);
+        var result = check productServiceEP->get("/ProductService/getProduct?productId=" + pId);
+        var payload = result.getJsonPayload();
+        Product product = check Product.convert(payload);
+        vProducts[count] = product;
+        count = count + 1;
+        total = total + product.price; 
+    }
+    Order productOrder = { id: orderId, total: total, products: vProducts };
     return productOrder;
+}
+
+http:Client inventoryServiceEP = new ("http://localhost:9093");
+
+function getInventoryForOrder(int[] ids, int orderId) returns Inventory[] | error {
+    float total = 0;
+    int count = 0;
+    Inventory[] vInventory = [];
+    foreach var id in ids {
+        http:Request req = new;
+        int pId = check sanitizeInt(id);
+        var result = check inventoryServiceEP->get("/InventoryService/checkInventory?productId=" + pId);
+        var payload = check result.getJsonPayload();
+        Inventory inventory = check Inventory.convert(payload);
+        vInventory[count] = inventory;
+        count += 1;
+    }
+    return vInventory;
 }
 
 function respond(http:Caller outboundEP, json | string payload, int statusCode = 200) {
