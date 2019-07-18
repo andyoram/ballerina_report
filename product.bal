@@ -3,11 +3,11 @@ import ballerina/log;
 import ballerina/mysql;
 import ballerina/sql;
 
-type Product record {
-    int id?;
-    string name?;
-    float price?;
-};
+type Product record {|
+    int id;
+    string name;
+    float price;
+|};
 
 @http:ServiceConfig {
     basePath: "/ProductService"
@@ -42,7 +42,7 @@ mysql:Client clientDB = new({
     name: "testdb",
     username: "root",
     password: "root",
-    poolOptions: { maximumPoolSize: 5 },
+    poolOptions: { maximumPoolSize: 10 },
     dbOptions: { useSSL: false }
 });
 
@@ -53,12 +53,8 @@ function getProductFromDB(int id) returns Product | error {
     };
     var result = clientDB->select("SELECT * FROM PRODUCT WHERE id = ?", Product, param);
     table<Product> dataTable = check result;
-    Product product = { };
-    foreach var row in dataTable {
-        product.id = row.id;
-        product.name = row.name;
-        product.price = row.price;
-    }
+    Product product = <Product> dataTable.getNext();
+    dataTable.close();
     return product;
 }
 
