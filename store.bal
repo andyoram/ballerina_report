@@ -1,18 +1,23 @@
 import ballerina/http;
 import ballerina/log;
 
-type Product record {
+type Product record {|
     int id;
     string name;
     float price;
-};
+|};
 
-type Order record {
-    int id?;
-    float total?;
+type Order record {|
+    int id;
+    float total;
     boolean processed = false;
     Product[] products?;
-};
+|};
+
+type Inventory record {|
+    int productId;
+    int stock;
+|};
 
 @http:ServiceConfig {
     basePath: "/StoreService"
@@ -26,13 +31,12 @@ service StoreService on new http:Listener(9090) {
         map<any> qParams = req.getQueryParams();
         int | error orderId = int.convert(qParams["orderId"]);
         if (orderId is int && orderId > 0) {
-            Order | error retrievedOrder = getOrder(untaint orderId);
+            json | error retrievedOrder = getOrder(untaint orderId);
             if (retrievedOrder is error) {
                 log:printError("error in retrieving order details.", err = retrievedOrder);
                 respond(outboundEP, "error in retrieving order details.", statusCode = 500);
             } else {
-                json jsonResponse = check json.convert(retrievedOrder);
-                respond(outboundEP, untaint jsonResponse);
+                respond(outboundEP, untaint retrievedOrder);
             }
         } else {
             log:printError("invalid input query parameter. expected a positive integer.");
@@ -43,21 +47,28 @@ service StoreService on new http:Listener(9090) {
 
 http:Client clientEP = new ("http://localhost:9091");
 
-function getOrder(int orderId) returns Order | error {
+function getOrder(int orderId) returns json | error {
     var response = clientEP->get("/OrderService/getOrder?orderId=" + orderId);
     if (response is http:Response) {
-        var payload = check response.getJsonPayload();
-        var productOrder = Order.stamp(payload);
-        if (productOrder is Order) {
-            productOrder.processed = true;
-            return productOrder;
-        } else {
-            log:printError("data received in invalid.", err = productOrder);
+        json payload = check response.getJsonPayload();
+        var productOrder = Order.stamp(payload.orderDetails);
+        var productInventory = Inventory[].stamp(payload.inventoryDetails);
+        if (productOrder is error) {
+            log:printError("order data received in invalid.", err = productOrder);
         }
+        if (productInventory is error) {
+            log:printError("inventory data received in invalid.", err = productInventory);
+        }
+        if (productOrder is Order && productInventory is Inventory[]) {
+            productOrder.processed = true;
+            json finalPayload = { orderDetails: check json.convert(productOrder), inventoryDetails: check json.convert(productInventory) };
+            return finalPayload;
+        }
+
     } else {
         log:printError("failed to retrieve order infomation.", err = response);
     }
-    error e = error("failed to retrieve order infomation.");
+    error e = error("failed to retrieve order information.");
     return e;
 }
 
